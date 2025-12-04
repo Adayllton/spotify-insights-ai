@@ -339,213 +339,113 @@ class SpotifyGeminiAssistant:
         logger.info("SpotifyGeminiAssistant inicializado com sucesso!")
     
     def _setup_spotify(self):
-        """Configura a autenticação do Spotify com cache por sessão"""
+        """Configura a autenticação do Spotify com cache por sessão (Versão Corrigida)"""
         try:
-            # Obter credenciais do Streamlit Secrets ou variáveis de ambiente
+            # 1. Carregar credenciais
             client_id = st.secrets.get("SPOTIFY_CLIENT_ID", os.getenv("SPOTIFY_CLIENT_ID"))
             client_secret = st.secrets.get("SPOTIFY_CLIENT_SECRET", os.getenv("SPOTIFY_CLIENT_SECRET"))
             redirect_uri = st.secrets.get("SPOTIFY_REDIRECT_URI", os.getenv("SPOTIFY_REDIRECT_URI", "http://localhost:8501"))
             
             if not client_id or not client_secret:
-                st.error("Credenciais do Spotify não encontradas. Configure SPOTIFY_CLIENT_ID e SPOTIFY_CLIENT_SECRET.")
+                st.error("Credenciais do Spotify não encontradas.")
                 st.stop()
             
-            # IMPORTANTE: Remover a barra final se existir
-            if redirect_uri.endswith('/'):
-                redirect_uri = redirect_uri[:-1]
+            # Escopos
+            scope = "user-top-read user-read-recently-played user-read-currently-playing user-library-read"
             
-            # Escopos necessários
-            scope = " ".join([
-                "user-top-read",
-                "user-read-recently-played",
-                "user-read-currently-playing",
-                "user-read-playback-state",
-                "user-library-read",
-                "user-read-private"
-            ])
-            
-            # Inicializar o cache handler da sessão
+            # Inicializar Cache
             cache_handler = StreamlitSessionCacheHandler()
             
-            # Configurar autenticação OAuth
+            # Gerenciador de Auth
             auth_manager = SpotifyOAuth(
                 client_id=client_id,
                 client_secret=client_secret,
                 redirect_uri=redirect_uri,
                 scope=scope,
-                cache_handler=cache_handler,  # Usa nosso cache handler personalizado
+                cache_handler=cache_handler,
                 show_dialog=True
             )
-            
-            # 1. Verifica se estamos voltando do login do Spotify (tem 'code' na URL?)
-            # Usar st.experimental_get_query_params para compatibilidade
-            params = st.experimental_get_query_params()
-            
-            if "code" in params:
-                try:
-                    code = params["code"][0]
-                    # Troca o código por um token de acesso
-                    token_info = auth_manager.get_access_token(code)
-                    if token_info:
-                        cache_handler.save_token_to_cache(token_info)
-                        st.success("✅ Login realizado com sucesso!")
-                        # Limpa a URL para ficar bonita
-                        st.experimental_set_query_params()
-                        # Pequena pausa e recarrega
-                        time.sleep(2)
-                        st.rerun()
-                    else:
-                        st.error("Não foi possível obter o token de acesso.")
-                except Exception as e:
-                    error_msg = str(e)
-                    st.error(f"Erro ao processar o login: {error_msg}")
-                    logger.error(f"Erro OAuth: {error_msg}")
-                    
-                    # Informações de debug úteis
-                    if "invalid_grant" in error_msg:
-                        st.info("""
-                        **Possíveis causas:**
-                        1. O código de autorização expirou (válido por apenas 30 segundos)
-                        2. O Redirect URI não está configurado corretamente
-                        3. O app não está em modo de desenvolvimento com seu email adicionado
-                        """)
-                    
-                    # Mostrar informações para debug
-                    with st.expander("🔧 Informações para Debug"):
-                        st.write(f"**Client ID:** {client_id[:10]}...")
-                        st.write(f"**Redirect URI:** {redirect_uri}")
-                        st.write(f"**Escopo:** {scope}")
-                        st.write("**URL atual:**", st.experimental_get_query_params())
 
-            # 2. Verifica se já temos um token válido na sessão
-            token_info = cache_handler.get_cached_token()
+            # 2. Lógica de Captura do Código (Atualizada para st.query_params)
+            # Verifica se há um código na URL vindo do Spotify
+            query_params = st.query_params
             
-            if token_info:
-                # Verifica se o token está expirado
-                if auth_manager.is_token_expired(token_info):
-                    try:
-                        # Tenta renovar o token
-                        token_info = auth_manager.refresh_access_token(token_info.get('refresh_token'))
-                        cache_handler.save_token_to_cache(token_info)
-                    except Exception as e:
-                        logger.warning(f"Não foi possível renovar o token: {e}")
-                        cache_handler.clear_token()
-                        token_info = None
-            
-            if token_info and not auth_manager.is_token_expired(token_info):
-                # Token válido encontrado - criar cliente Spotify
-                self.sp = spotipy.Spotify(auth_manager=auth_manager)
-                self.is_authenticated = True
-                
-                # Obter informações do usuário
+            if "code" in query_params:
                 try:
-                    user = self.sp.current_user()
-                    st.session_state.user_name = user.get('display_name', 'Usuário')
-                    st.session_state.user_id = user.get('id', '')
+                    code = query_params["code"]
+                    # Troca o código pelo token
+                    token_info = auth_manager.get_access_token(code)
                     
-                    # Salvar informações do usuário
-                    if 'images' in user and user['images']:
-                        st.session_state.user_image = user['images'][0]['url']
-                    else:
-                        st.session_state.user_image = None
-                        
-                    logger.info(f"Conectado ao Spotify como: {user.get('display_name')}")
+                    # Limpa a URL imediatamente para evitar reutilização do código (Erro Invalid Grant)
+                    st.query_params.clear()
                     
+                    if token_info:
+                        st.success("✅ Conectado!")
+                        time.sleep(1)
+                        st.rerun()
                 except Exception as e:
-                    logger.error(f"Erro ao obter dados do usuário: {e}")
-                    st.session_state.user_name = "Usuário"
-                    st.session_state.user_image = None
-                    
-            else:
-                # 3. Se não tem token, mostra o botão de login
+                    # Se der erro (ex: código expirado), limpa a URL e tenta do zero
+                    logger.error(f"Erro na troca do token: {e}")
+                    st.query_params.clear()
+                    st.error("Erro na autenticação. Por favor, tente novamente.")
+                    # Não damos stop aqui, deixamos cair no fluxo de "mostrar botão de login"
+
+            # 3. Verificação de Token Existente
+            token_info = cache_handler.get_cached_token()
+
+            if not auth_manager.validate_token(token_info):
+                # Se não tem token válido, mostramos o botão de login
                 self.is_authenticated = False
                 self.sp = None
                 
-                # Gera a URL de autorização
-                try:
-                    auth_url = auth_manager.get_authorize_url()
-                    
-                    # Interface de Login
-                    st.markdown("""
-                    <style>
-                    .login-container {
-                        display: flex;
-                        flex-direction: column;
-                        align-items: center;
-                        justify-content: center;
-                        min-height: 70vh;
-                        text-align: center;
-                        padding: 2rem;
-                    }
-                    .login-button {
-                        background-color: #1DB954;
-                        color: white;
-                        padding: 15px 30px;
-                        border-radius: 30px;
-                        text-decoration: none;
-                        font-weight: bold;
-                        font-size: 18px;
-                        display: inline-block;
-                        margin: 20px 0;
-                        border: none;
-                        transition: all 0.3s ease;
-                    }
-                    .login-button:hover {
-                        background-color: #1ED760;
-                        transform: scale(1.05);
-                    }
-                    </style>
+                auth_url = auth_manager.get_authorize_url()
+                
+                st.markdown("""<br><br>""", unsafe_allow_html=True)
+                col1, col2, col3 = st.columns([1,2,1])
+                with col2:
+                    st.markdown(f"""
+                        <div style="text-align: center;">
+                            <h1>🎵 Spotify Insights</h1>
+                            <p>Faça login para analisar seus dados.</p>
+                            <a href="{auth_url}" target="_self" style="
+                                background-color: #1DB954; 
+                                color: white; 
+                                padding: 15px 30px; 
+                                border-radius: 30px; 
+                                text-decoration: none; 
+                                font-weight: bold; 
+                                font-size: 18px;
+                                display: inline-block;
+                                margin-top: 20px;">
+                                Conectar com Spotify
+                            </a>
+                        </div>
                     """, unsafe_allow_html=True)
-                    
-                    st.markdown('<div class="login-container">', unsafe_allow_html=True)
-                    st.markdown('<h1 style="color: #1DB954; font-size: 2.5rem;">🎵 Spotify Insights AI</h1>', unsafe_allow_html=True)
-                    st.markdown('<p style="color: #B3B3B3; font-size: 1.2rem; margin-bottom: 30px;">Analise seus hábitos musicais com IA</p>', unsafe_allow_html=True)
-                    
-                    # Botão de login
-                    st.markdown(f'''
-                    <a href="{auth_url}" target="_self">
-                        <button class="login-button">
-                            🟢 Conectar com Spotify
-                        </button>
-                    </a>
-                    ''', unsafe_allow_html=True)
-                    
-                    st.markdown('<p style="color: #888; margin-top: 20px;">Você será redirecionado para a página segura de login do Spotify.</p>', unsafe_allow_html=True)
-                    
-                    # Informações para desenvolvedores
-                    with st.expander("⚙️ Informações para Desenvolvedores"):
-                        st.info(f"""
-                        **Configurações necessárias no Spotify Developer Dashboard:**
-                        
-                        1. **Redirect URIs:** Adicione exatamente esta URL:
-                           `{redirect_uri}`
-                        
-                        2. **Modo de Desenvolvimento:** 
-                           - Seu app está em "Development Mode"
-                           - Adicione seu email em "Users and Access"
-                        
-                        3. **Para produção:** Solicite "Quota Extension" para sair do modo desenvolvimento
-                        
-                        **URLs comuns:**
-                        - Local: `http://localhost:8501`
-                        - Streamlit Cloud: `https://seu-app.streamlit.app`
-                        """)
-                        
-                        if st.button("📋 Copiar Redirect URI"):
-                            st.code(redirect_uri, language="text")
-                    
-                    st.markdown('</div>', unsafe_allow_html=True)
-                    
-                    # Para a execução aqui
-                    st.stop()
-                    
-                except Exception as e:
-                    st.error(f"Erro ao gerar URL de autorização: {str(e)}")
-                    st.stop()
-        
+                
+                # Exibe o Redirect URI para debug se der erro
+                with st.expander("Está tendo problemas?"):
+                    st.warning("Verifique se esta URL está exata no Spotify Dashboard:")
+                    st.code(redirect_uri)
+                
+                st.stop() # Para a execução aqui até logar
+            
+            else:
+                # 4. Sucesso: Token válido
+                self.sp = spotipy.Spotify(auth_manager=auth_manager)
+                self.is_authenticated = True
+                
+                # Carregar dados básicos do usuário
+                try:
+                    user = self.sp.current_user()
+                    st.session_state.user_name = user.get('display_name', 'Usuário')
+                    st.session_state.user_id = user.get('id')
+                    if user.get('images'):
+                        st.session_state.user_image = user['images'][0]['url']
+                except:
+                    pass
+
         except Exception as e:
-            logger.error(f"Erro crítico ao configurar Spotify: {e}")
-            st.error(f"Erro de configuração: {str(e)}")
+            st.error(f"Erro crítico: {str(e)}")
             st.stop()
     
     # ... (mantenha todos os outros métodos como estão) ...
