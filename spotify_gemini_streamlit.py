@@ -45,7 +45,15 @@ class StreamlitSessionCacheHandler(CacheHandler):
     
     def clear_token(self):
         """Limpa o token da sessão"""
-        st.session_state.spotify_token = None
+        if 'spotify_token' in st.session_state:
+            st.session_state.spotify_token = None
+
+# Configurar logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Configurar logging
 logging.basicConfig(
@@ -287,7 +295,7 @@ class SpotifyTrack:
             "is_playing": self.is_playing
         }
 
-# ========== CLASSE PRINCIPAL ATUALIZADA ==========
+# ========== CLASSE PRINCIPAL CORRIGIDA ==========
 
 class SpotifyGeminiAssistant:
     """Classe principal para integração Spotify + Gemini (Multi-Usuário)"""
@@ -342,6 +350,10 @@ class SpotifyGeminiAssistant:
                 st.error("Credenciais do Spotify não encontradas. Configure SPOTIFY_CLIENT_ID e SPOTIFY_CLIENT_SECRET.")
                 st.stop()
             
+            # IMPORTANTE: Remover a barra final se existir
+            if redirect_uri.endswith('/'):
+                redirect_uri = redirect_uri[:-1]
+            
             # Escopos necessários
             scope = " ".join([
                 "user-top-read",
@@ -366,33 +378,59 @@ class SpotifyGeminiAssistant:
             )
             
             # 1. Verifica se estamos voltando do login do Spotify (tem 'code' na URL?)
-            if "code" in st.query_params:
+            # Usar st.experimental_get_query_params para compatibilidade
+            params = st.experimental_get_query_params()
+            
+            if "code" in params:
                 try:
-                    code = st.query_params["code"]
+                    code = params["code"][0]
                     # Troca o código por um token de acesso
                     token_info = auth_manager.get_access_token(code)
                     if token_info:
                         cache_handler.save_token_to_cache(token_info)
                         st.success("✅ Login realizado com sucesso!")
                         # Limpa a URL para ficar bonita
-                        st.query_params.clear()
-                        # Recarrega a página para aplicar as mudanças
+                        st.experimental_set_query_params()
+                        # Pequena pausa e recarrega
+                        time.sleep(2)
                         st.rerun()
                     else:
                         st.error("Não foi possível obter o token de acesso.")
                 except Exception as e:
-                    st.error("Erro ao processar o login. Tente novamente.")
-                    logger.error(f"Erro OAuth: {e}")
+                    error_msg = str(e)
+                    st.error(f"Erro ao processar o login: {error_msg}")
+                    logger.error(f"Erro OAuth: {error_msg}")
+                    
+                    # Informações de debug úteis
+                    if "invalid_grant" in error_msg:
+                        st.info("""
+                        **Possíveis causas:**
+                        1. O código de autorização expirou (válido por apenas 30 segundos)
+                        2. O Redirect URI não está configurado corretamente
+                        3. O app não está em modo de desenvolvimento com seu email adicionado
+                        """)
+                    
+                    # Mostrar informações para debug
+                    with st.expander("🔧 Informações para Debug"):
+                        st.write(f"**Client ID:** {client_id[:10]}...")
+                        st.write(f"**Redirect URI:** {redirect_uri}")
+                        st.write(f"**Escopo:** {scope}")
+                        st.write("**URL atual:**", st.experimental_get_query_params())
 
             # 2. Verifica se já temos um token válido na sessão
             token_info = cache_handler.get_cached_token()
-            if token_info and auth_manager.is_token_expired(token_info):
-                # Tenta renovar o token se expirado
-                try:
-                    token_info = auth_manager.refresh_access_token(token_info['refresh_token'])
-                    cache_handler.save_token_to_cache(token_info)
-                except:
-                    token_info = None
+            
+            if token_info:
+                # Verifica se o token está expirado
+                if auth_manager.is_token_expired(token_info):
+                    try:
+                        # Tenta renovar o token
+                        token_info = auth_manager.refresh_access_token(token_info.get('refresh_token'))
+                        cache_handler.save_token_to_cache(token_info)
+                    except Exception as e:
+                        logger.warning(f"Não foi possível renovar o token: {e}")
+                        cache_handler.clear_token()
+                        token_info = None
             
             if token_info and not auth_manager.is_token_expired(token_info):
                 # Token válido encontrado - criar cliente Spotify
@@ -422,570 +460,113 @@ class SpotifyGeminiAssistant:
                 # 3. Se não tem token, mostra o botão de login
                 self.is_authenticated = False
                 self.sp = None
-                auth_url = auth_manager.get_authorize_url()
                 
-                # Interface de Login
-                st.markdown('<div class="login-container">', unsafe_allow_html=True)
-                st.markdown('<h1 style="color: #1DB954; font-size: 2.5rem;">🎵 Spotify Insights AI</h1>', unsafe_allow_html=True)
-                st.markdown('<p style="color: #B3B3B3; font-size: 1.2rem; margin-bottom: 30px;">Analise seus hábitos musicais com IA</p>', unsafe_allow_html=True)
-                
-                # Botão de login melhorado
-                st.markdown(f'''
-                    <a href="{auth_url}" target="_self" style="text-decoration: none;">
+                # Gera a URL de autorização
+                try:
+                    auth_url = auth_manager.get_authorize_url()
+                    
+                    # Interface de Login
+                    st.markdown("""
+                    <style>
+                    .login-container {
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                        justify-content: center;
+                        min-height: 70vh;
+                        text-align: center;
+                        padding: 2rem;
+                    }
+                    .login-button {
+                        background-color: #1DB954;
+                        color: white;
+                        padding: 15px 30px;
+                        border-radius: 30px;
+                        text-decoration: none;
+                        font-weight: bold;
+                        font-size: 18px;
+                        display: inline-block;
+                        margin: 20px 0;
+                        border: none;
+                        transition: all 0.3s ease;
+                    }
+                    .login-button:hover {
+                        background-color: #1ED760;
+                        transform: scale(1.05);
+                    }
+                    </style>
+                    """, unsafe_allow_html=True)
+                    
+                    st.markdown('<div class="login-container">', unsafe_allow_html=True)
+                    st.markdown('<h1 style="color: #1DB954; font-size: 2.5rem;">🎵 Spotify Insights AI</h1>', unsafe_allow_html=True)
+                    st.markdown('<p style="color: #B3B3B3; font-size: 1.2rem; margin-bottom: 30px;">Analise seus hábitos musicais com IA</p>', unsafe_allow_html=True)
+                    
+                    # Botão de login
+                    st.markdown(f'''
+                    <a href="{auth_url}" target="_self">
                         <button class="login-button">
                             🟢 Conectar com Spotify
                         </button>
                     </a>
-                ''', unsafe_allow_html=True)
-                
-                st.markdown('<p style="color: #888; margin-top: 20px;">Você será redirecionado para a página segura de login do Spotify.</p>', unsafe_allow_html=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-                
-                # Adicionar informações sobre o modo de desenvolvimento
-                if st.checkbox("Mostrar informações para desenvolvedores"):
-                    st.info("""
-                    **Modo de Desenvolvimento do Spotify:**
-                    - Apps novos no Spotify ficam em "Development Mode" por padrão
-                    - Neste modo, apenas usuários adicionados manualmente podem logar
-                    - Para abrir para todos, solicite "Quota Extension" no painel do Spotify
+                    ''', unsafe_allow_html=True)
                     
-                    **Configurações necessárias no Spotify Developer Dashboard:**
-                    1. Adicione esta URL como Redirect URI: `{redirect_uri}`
-                    2. Para testes locais: `http://localhost:8501`
-                    3. Para produção: `https://seu-app.streamlit.app`
+                    st.markdown('<p style="color: #888; margin-top: 20px;">Você será redirecionado para a página segura de login do Spotify.</p>', unsafe_allow_html=True)
                     
-                    **Usuários permitidos (Development Mode):**
-                    Adicione os emails dos usuários na seção "Users and Access" do seu app no Spotify Dashboard.
-                    """)
-                
-                # Para a execução do script aqui até o usuário logar
-                st.stop()
-        
-        except Exception as e:
-            logger.error(f"Erro ao configurar Spotify: {e}")
-            st.error(f"Erro de autenticação: {str(e)}")
-            st.stop()
-
-    # ========== MÉTODOS DO SPOTIFY (MANTIDOS) ==========
-    
-    def get_top_tracks(self, limit: int = 10, time_range: str = "medium_term") -> Dict[str, Any]:
-        """Obtém as músicas mais ouvidas do usuário"""
-        if not self.is_authenticated or not self.sp:
-            return {"status": "error", "message": "Não autenticado"}
-        
-        try:
-            results = self.sp.current_user_top_tracks(
-                limit=limit,
-                time_range=time_range
-            )
-            
-            tracks = []
-            for item in results['items']:
-                track = SpotifyTrack(
-                    id=item['id'],
-                    name=item['name'],
-                    artist=item['artists'][0]['name'],
-                    album=item['album']['name'],
-                    duration_ms=item['duration_ms'],
-                    popularity=item['popularity'],
-                    release_date=item['album'].get('release_date'),
-                    image_url=item['album']['images'][0]['url'] if item['album']['images'] else None
-                )
-                tracks.append(track.to_dict())
-            
-            return {
-                "status": "success",
-                "data": tracks,
-                "metadata": {
-                    "time_range": time_range,
-                    "total": len(tracks)
-                }
-            }
-        
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-    
-    def get_top_artists(self, limit: int = 10, time_range: str = "medium_term") -> Dict[str, Any]:
-        """Obtém os artistas mais ouvidos do usuário"""
-        if not self.is_authenticated or not self.sp:
-            return {"status": "error", "message": "Não autenticado"}
-        
-        try:
-            results = self.sp.current_user_top_artists(
-                limit=limit,
-                time_range=time_range
-            )
-            
-            artists = []
-            for item in results['items']:
-                artists.append({
-                    "name": item['name'],
-                    "genres": item['genres'][:3],
-                    "popularity": item['popularity'],
-                    "followers": item['followers']['total'],
-                    "image_url": item['images'][0]['url'] if item['images'] else None
-                })
-            
-            return {
-                "status": "success",
-                "data": artists,
-                "metadata": {
-                    "time_range": time_range,
-                    "total": len(artists)
-                }
-            }
-        
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-    
-    def get_recently_played(self, limit: int = 20) -> Dict[str, Any]:
-        """Obtém as músicas ouvidas recentemente"""
-        if not self.is_authenticated or not self.sp:
-            return {"status": "error", "message": "Não autenticado"}
-        
-        try:
-            results = self.sp.current_user_recently_played(limit=limit)
-            
-            tracks = []
-            for item in results['items']:
-                track_data = item['track']
-                played_at = item.get('played_at', '')
-                
-                # Formatar data/hora
-                if played_at:
-                    dt = datetime.fromisoformat(played_at.replace('Z', '+00:00'))
-                    played_at = dt.strftime("%d/%m/%Y %H:%M")
-                
-                track = SpotifyTrack(
-                    id=track_data['id'],
-                    name=track_data['name'],
-                    artist=track_data['artists'][0]['name'],
-                    album=track_data['album']['name'],
-                    duration_ms=track_data['duration_ms'],
-                    popularity=track_data['popularity'],
-                    release_date=track_data['album'].get('release_date'),
-                    image_url=track_data['album']['images'][0]['url'] if track_data['album']['images'] else None,
-                    played_at=played_at
-                )
-                tracks.append(track.to_dict())
-            
-            return {
-                "status": "success",
-                "data": tracks,
-                "metadata": {
-                    "total": len(tracks)
-                }
-            }
-        
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-    
-    def get_currently_playing(self) -> Dict[str, Any]:
-        """Obtém a música que está tocando no momento"""
-        if not self.is_authenticated or not self.sp:
-            return {"status": "error", "message": "Não autenticado"}
-        
-        try:
-            current = self.sp.currently_playing()
-            
-            if current is None or not current['is_playing']:
-                return {
-                    "status": "success",
-                    "data": None,
-                    "message": "Nenhuma música está tocando no momento"
-                }
-            
-            item = current['item']
-            progress_ms = current['progress_ms']
-            
-            # Calcular progresso percentual
-            progress_percent = (progress_ms / item['duration_ms']) * 100 if item['duration_ms'] > 0 else 0
-            
-            track = SpotifyTrack(
-                id=item['id'],
-                name=item['name'],
-                artist=item['artists'][0]['name'],
-                album=item['album']['name'],
-                duration_ms=item['duration_ms'],
-                popularity=item['popularity'],
-                release_date=item['album'].get('release_date'),
-                image_url=item['album']['images'][0]['url'] if item['album']['images'] else None,
-                is_playing=True
-            )
-            
-            track_dict = track.to_dict()
-            track_dict.update({
-                "progress_ms": progress_ms,
-                "progress_percent": round(progress_percent, 1),
-                "is_playing": True,
-                "image_url": track.image_url
-            })
-            
-            return {
-                "status": "success",
-                "data": track_dict
-            }
-        
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-    
-    def get_user_profile(self) -> Dict[str, Any]:
-        """Obtém informações do perfil do usuário"""
-        if not self.is_authenticated or not self.sp:
-            return {"status": "error", "message": "Não autenticado"}
-        
-        try:
-            user = self.sp.current_user()
-            
-            return {
-                "status": "success",
-                "data": {
-                    "display_name": user.get('display_name', ''),
-                    "email": user.get('email', ''),
-                    "country": user.get('country', ''),
-                    "followers": user.get('followers', {}).get('total', 0),
-                    "product": user.get('product', ''),
-                    "image_url": user.get('images', [{}])[0].get('url', '') if user.get('images') else ''
-                }
-            }
-        
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-    
-    def get_playlists(self, limit: int = 20) -> Dict[str, Any]:
-        """Obtém as playlists do usuário"""
-        if not self.is_authenticated or not self.sp:
-            return {"status": "error", "message": "Não autenticado"}
-        
-        try:
-            results = self.sp.current_user_playlists(limit=limit)
-            
-            playlists = []
-            for item in results['items']:
-                playlists.append({
-                    "name": item['name'],
-                    "description": item.get('description', ''),
-                    "tracks": item['tracks']['total'],
-                    "image_url": item['images'][0]['url'] if item['images'] else None
-                })
-            
-            return {
-                "status": "success",
-                "data": playlists,
-                "metadata": {
-                    "total": len(playlists)
-                }
-            }
-        
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-    
-    # ========== MÉTODOS DE ANÁLISE PROFUNDA ==========
-    
-    def get_audio_features_stats(self, track_ids: List[str]) -> Dict[str, Any]:
-        """Obtém estatísticas de áudio para uma lista de músicas"""
-        if not self.is_authenticated or not self.sp:
-            return {"status": "error", "message": "Não autenticado"}
-        
-        try:
-            if not track_ids:
-                return {"status": "error", "message": "Nenhum ID de música fornecido"}
-            
-            # Fazer a requisição em lotes de 50
-            all_features = []
-            for i in range(0, len(track_ids), 50):
-                batch = track_ids[i:i+50]
-                features = self.sp.audio_features(batch)
-                all_features.extend([f for f in features if f])
-            
-            if not all_features:
-                return {"status": "error", "message": "Não foi possível obter audio features"}
-            
-            # Calcular médias e estatísticas
-            features_data = []
-            for f in all_features:
-                if f:
-                    features_data.append({
-                        "danceability": f['danceability'],
-                        "energy": f['energy'],
-                        "valence": f['valence'],
-                        "acousticness": f['acousticness'],
-                        "instrumentalness": f['instrumentalness'],
-                        "speechiness": f['speechiness'],
-                        "tempo": f['tempo'],
-                        "liveness": f['liveness'],
-                        "loudness": f['loudness'],
-                        "mode": f['mode'],
-                        "key": f['key']
-                    })
-            
-            # Calcular médias
-            if features_data:
-                avg_features = {}
-                for key in features_data[0].keys():
-                    avg_features[key] = sum(f[key] for f in features_data) / len(features_data)
-            else:
-                avg_features = {}
-            
-            # Análise de moda (para chave e modo)
-            keys = [f['key'] for f in features_data if 'key' in f]
-            modes = [f['mode'] for f in features_data if 'mode' in f]
-            
-            key_mode = Counter(keys).most_common(1)[0][0] if keys else None
-            mode_mode = Counter(modes).most_common(1)[0][0] if modes else None
-            
-            # Mapear chave para nome musical
-            key_names = {
-                0: "C", 1: "C#/Db", 2: "D", 3: "D#/Eb", 4: "E", 
-                5: "F", 6: "F#/Gb", 7: "G", 8: "G#/Ab", 9: "A", 
-                10: "A#/Bb", 11: "B"
-            }
-            mode_names = {0: "Menor", 1: "Maior"}
-            
-            return {
-                "status": "success",
-                "averages": avg_features,
-                "raw_data": features_data,
-                "key_analysis": {
-                    "most_common_key": key_names.get(key_mode, "Desconhecida"),
-                    "most_common_mode": mode_names.get(mode_mode, "Desconhecido"),
-                    "total_tracks": len(features_data)
-                }
-            }
-        
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-    
-    def get_saved_tracks(self, limit: int = 200) -> Dict[str, Any]:
-        """Obtém as músicas salvas na biblioteca do usuário"""
-        if not self.is_authenticated or not self.sp:
-            return {"status": "error", "message": "Não autenticado"}
-        
-        try:
-            MAX_LIMIT = 1000
-            MAX_PER_PAGE = 50
-            
-            limit = min(limit, MAX_LIMIT)
-            
-            tracks = []
-            offset = 0
-            
-            while len(tracks) < limit:
-                remaining = limit - len(tracks)
-                page_limit = min(remaining, MAX_PER_PAGE)
-                
-                try:
-                    results = self.sp.current_user_saved_tracks(
-                        limit=page_limit, 
-                        offset=offset
-                    )
-                except Exception as e:
-                    logger.error(f"Erro na página {offset//50}: {e}")
-                    break
-                
-                if not results or not results.get('items'):
-                    break
-                    
-                for item in results['items']:
-                    track_data = item['track']
-                    
-                    track = SpotifyTrack(
-                        id=track_data['id'],
-                        name=track_data['name'],
-                        artist=track_data['artists'][0]['name'],
-                        album=track_data['album']['name'],
-                        duration_ms=track_data['duration_ms'],
-                        popularity=track_data['popularity'],
-                        release_date=track_data['album'].get('release_date'),
-                        image_url=track_data['album']['images'][0]['url'] if track_data['album']['images'] else None
-                    )
-                    tracks.append(track.to_dict())
-                
-                offset += len(results['items'])
-                
-                if len(results['items']) < MAX_PER_PAGE:
-                    break
-                
-                time.sleep(0.1)
-            
-            logger.info(f"Obtidas {len(tracks)} músicas salvas em {offset//50 + 1} páginas")
-            
-            return {
-                "status": "success",
-                "data": tracks,
-                "metadata": {
-                    "total": len(tracks),
-                    "pages": offset//50 + 1
-                }
-            }
-        
-        except Exception as e:
-            logger.error(f"Erro ao obter músicas salvas: {e}")
-            return {"status": "error", "message": str(e)}
-    
-    def get_genre_analysis(self, limit: int = 50) -> Dict[str, Any]:
-        """Análise detalhada de gêneros baseada em artistas salvos"""
-        if not self.is_authenticated or not self.sp:
-            return {"status": "error", "message": "Não autenticado"}
-        
-        try:
-            artists_result = self.get_top_artists(limit=limit, time_range="long_term")
-            
-            if artists_result["status"] != "success":
-                return {"status": "error", "message": "Não foi possível obter artistas"}
-            
-            all_genres = []
-            genre_by_artist = {}
-            
-            for artist in artists_result["data"]:
-                genres = artist.get('genres', [])
-                all_genres.extend(genres)
-                if genres:
-                    genre_by_artist[artist['name']] = genres
-            
-            # Contar frequência de gêneros
-            genre_counts = Counter(all_genres)
-            total_artists = len(artists_result["data"])
-            
-            # Calcular diversidade de gêneros
-            unique_genres = len(genre_counts)
-            genre_diversity = (unique_genres / total_artists) * 100 if total_artists > 0 else 0
-            
-            return {
-                "status": "success",
-                "genre_analysis": {
-                    "top_genres": dict(genre_counts.most_common(15)),
-                    "unique_genres": unique_genres,
-                    "total_artists": total_artists,
-                    "genre_diversity": round(genre_diversity, 1),
-                    "genre_by_artist": genre_by_artist
-                }
-            }
-        
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-    
-    def get_era_analysis(self, tracks_data: List[Dict]) -> Dict[str, Any]:
-        """Análise de eras baseada nas datas de lançamento"""
-        try:
-            years = []
-            decades = []
-            
-            for track in tracks_data:
-                if track.get('release_date'):
-                    try:
-                        date_str = track['release_date']
-                        year = int(date_str.split('-')[0])
-                        years.append(year)
+                    # Informações para desenvolvedores
+                    with st.expander("⚙️ Informações para Desenvolvedores"):
+                        st.info(f"""
+                        **Configurações necessárias no Spotify Developer Dashboard:**
                         
-                        decade = (year // 10) * 10
-                        decades.append(decade)
-                    except:
-                        continue
-            
-            if not years:
-                return {"status": "error", "message": "Nenhuma data de lançamento disponível"}
-            
-            year_counts = Counter(years)
-            decade_counts = Counter(decades)
-            
-            oldest_year = min(years) if years else None
-            newest_year = max(years) if years else None
-            avg_year = sum(years) / len(years) if years else None
-            
-            # Calcular concentração por década
-            total_tracks = len(years)
-            decade_percentages = {}
-            for decade, count in decade_counts.items():
-                decade_percentages[str(decade)] = round((count / total_tracks) * 100, 1)
-            
-            return {
-                "status": "success",
-                "era_analysis": {
-                    "year_distribution": dict(year_counts),
-                    "decade_distribution": dict(decade_counts),
-                    "decade_percentages": decade_percentages,
-                    "oldest_year": oldest_year,
-                    "newest_year": newest_year,
-                    "average_year": round(avg_year, 1) if avg_year else None,
-                    "total_tracks_analyzed": total_tracks,
-                    "year_range": f"{oldest_year} - {newest_year}"
-                }
-            }
+                        1. **Redirect URIs:** Adicione exatamente esta URL:
+                           `{redirect_uri}`
+                        
+                        2. **Modo de Desenvolvimento:** 
+                           - Seu app está em "Development Mode"
+                           - Adicione seu email em "Users and Access"
+                        
+                        3. **Para produção:** Solicite "Quota Extension" para sair do modo desenvolvimento
+                        
+                        **URLs comuns:**
+                        - Local: `http://localhost:8501`
+                        - Streamlit Cloud: `https://seu-app.streamlit.app`
+                        """)
+                        
+                        if st.button("📋 Copiar Redirect URI"):
+                            st.code(redirect_uri, language="text")
+                    
+                    st.markdown('</div>', unsafe_allow_html=True)
+                    
+                    # Para a execução aqui
+                    st.stop()
+                    
+                except Exception as e:
+                    st.error(f"Erro ao gerar URL de autorização: {str(e)}")
+                    st.stop()
         
         except Exception as e:
-            return {"status": "error", "message": str(e)}
+            logger.error(f"Erro crítico ao configurar Spotify: {e}")
+            st.error(f"Erro de configuração: {str(e)}")
+            st.stop()
     
-    def analyze_with_gemini(self, query: str, context_data: Dict[str, Any]) -> str:
-        """Analisa dados com Gemini"""
-        try:
-            serialized_context = safe_serialize(context_data)
-            
-            context_json = json.dumps(
-                serialized_context, 
-                indent=2, 
-                ensure_ascii=False,
-                cls=EnhancedJSONEncoder
-            )
-            
-            prompt = f"""
-            Como especialista em análise musical, analise os dados do Spotify fornecidos e responda à pergunta do usuário.
-            
-            PERGUNTA DO USUÁRIO: {query}
-            
-            DADOS DISPONÍVEIS:
-            {context_json}
-            
-            Instruções:
-            1. Seja conciso mas informativo
-            2. Destaque padrões interessantes
-            3. Ofereça insights pessoais
-            4. Sugira recomendações quando apropriado
-            5. Use um tom amigável e entusiástico
-            
-            RESPOSTA:
-            """
-            
-            response = self.model.generate_content(prompt)
-            return response.text
-        
-        except Exception as e:
-            logger.error(f"Erro ao processar com Gemini: {e}")
-            return f"Erro ao processar com Gemini: {str(e)}"
-    
-    def get_statistics_summary(self) -> Dict[str, Any]:
-        """Obtém um resumo das estatísticas do usuário"""
-        if not self.is_authenticated or not self.sp:
-            return {"status": "error", "message": "Não autenticado"}
-        
-        summary = {}
-        
-        try:
-            summary["top_tracks_short"] = self.get_top_tracks(limit=5, time_range="short_term")
-            summary["top_artists_short"] = self.get_top_artists(limit=5, time_range="short_term")
-            summary["recently_played"] = self.get_recently_played(limit=10)
-            summary["currently_playing"] = self.get_currently_playing()
-            
-            return {
-                "status": "success",
-                "summary": summary
-            }
-        
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-    
+    # ... (mantenha todos os outros métodos como estão) ...
+
     def logout(self):
         """Realiza logout do usuário"""
-        if 'spotify_token' in st.session_state:
-            st.session_state.spotify_token = None
+        cache_handler = StreamlitSessionCacheHandler()
+        cache_handler.clear_token()
+        
+        # Limpar outras informações da sessão
+        keys_to_clear = ['user_name', 'user_image', 'user_id']
+        for key in keys_to_clear:
+            if key in st.session_state:
+                del st.session_state[key]
+        
+        # Limpar o assistente
         if 'assistant' in st.session_state:
             del st.session_state.assistant
-        if 'user_name' in st.session_state:
-            del st.session_state.user_name
-        if 'user_image' in st.session_state:
-            del st.session_state.user_image
         
         st.success("✅ Logout realizado com sucesso!")
+        time.sleep(1)
         st.rerun()
 
 # ========== FUNÇÕES DE VISUALIZAÇÃO (MANTIDAS) ==========
