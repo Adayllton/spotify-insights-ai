@@ -16,44 +16,10 @@ import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
-from spotipy.cache_handler import CacheHandler
 import base64
 from PIL import Image
 import requests
 from io import BytesIO
-
-# ========== CACHE HANDLER PERSONALIZADO PARA STREAMLIT ==========
-
-class StreamlitSessionCacheHandler(CacheHandler):
-    """
-    Salva o token na sessão do Streamlit para cada usuário individualmente,
-    em vez de usar um arquivo no servidor.
-    """
-    
-    def __init__(self):
-        # Inicializa o cache na sessão se não existir
-        if 'spotify_token' not in st.session_state:
-            st.session_state.spotify_token = None
-    
-    def get_cached_token(self):
-        """Retorna o token armazenado na sessão"""
-        return st.session_state.spotify_token
-    
-    def save_token_to_cache(self, token_info):
-        """Salva o token na sessão"""
-        st.session_state.spotify_token = token_info
-    
-    def clear_token(self):
-        """Limpa o token da sessão"""
-        if 'spotify_token' in st.session_state:
-            st.session_state.spotify_token = None
-
-# Configurar logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 # Configurar logging
 logging.basicConfig(
@@ -175,32 +141,6 @@ st.markdown("""
         font-weight: bold;
         color: white;
     }
-    .login-container {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        min-height: 70vh;
-        text-align: center;
-    }
-    .login-button {
-        background-color: #1DB954;
-        color: white;
-        padding: 15px 30px;
-        border-radius: 30px;
-        text-decoration: none;
-        font-weight: bold;
-        font-size: 18px;
-        display: inline-block;
-        margin: 20px 0;
-        border: none;
-        cursor: pointer;
-    }
-    .login-button:hover {
-        background-color: #1ED760;
-        transform: scale(1.05);
-        transition: all 0.3s ease;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -261,13 +201,13 @@ def safe_serialize(obj):
 @dataclass
 class SpotifyTrack:
     """Classe para representar uma música do Spotify"""
-    id: str
+    id: str  # Novo campo
     name: str
     artist: str
     album: str
     duration_ms: int
     popularity: int
-    release_date: Optional[str] = None
+    release_date: Optional[str] = None  # Novo campo
     image_url: Optional[str] = None
     played_at: Optional[str] = None
     is_playing: bool = False
@@ -295,10 +235,10 @@ class SpotifyTrack:
             "is_playing": self.is_playing
         }
 
-# ========== CLASSE PRINCIPAL CORRIGIDA ==========
+# ========== CLASSE PRINCIPAL ATUALIZADA ==========
 
 class SpotifyGeminiAssistant:
-    """Classe principal para integração Spotify + Gemini (Multi-Usuário)"""
+    """Classe principal para integração Spotify + Gemini"""
     
     def __init__(self):
         """Inicializa o assistente com as APIs do Spotify e Gemini"""
@@ -333,143 +273,549 @@ class SpotifyGeminiAssistant:
             safety_settings=safety_settings
         )
         
-        # Configurar Spotify (agora multi-usuário)
+        # Configurar Spotify
         self._setup_spotify()
         
         logger.info("SpotifyGeminiAssistant inicializado com sucesso!")
     
     def _setup_spotify(self):
-        """Configura a autenticação do Spotify com cache por sessão (Versão Corrigida)"""
+        """Configura a autenticação do Spotify"""
         try:
-            # 1. Carregar credenciais
+            # Obter credenciais do Streamlit Secrets ou variáveis de ambiente
             client_id = st.secrets.get("SPOTIFY_CLIENT_ID", os.getenv("SPOTIFY_CLIENT_ID"))
             client_secret = st.secrets.get("SPOTIFY_CLIENT_SECRET", os.getenv("SPOTIFY_CLIENT_SECRET"))
             redirect_uri = st.secrets.get("SPOTIFY_REDIRECT_URI", os.getenv("SPOTIFY_REDIRECT_URI", "http://localhost:8501"))
             
             if not client_id or not client_secret:
-                st.error("Credenciais do Spotify não encontradas.")
+                st.error("Credenciais do Spotify não encontradas. Configure SPOTIFY_CLIENT_ID e SPOTIFY_CLIENT_SECRET.")
                 st.stop()
             
-            # Escopos
-            scope = "user-top-read user-read-recently-played user-read-currently-playing user-library-read"
+            # Escopos necessários
+            scope = " ".join([
+                "user-top-read",
+                "user-read-recently-played",
+                "user-read-currently-playing",
+                "user-read-playback-state",
+                "user-library-read",
+                "user-read-private"
+            ])
             
-            # Inicializar Cache
-            cache_handler = StreamlitSessionCacheHandler()
-            
-            # Gerenciador de Auth
+            # Configurar autenticação OAuth
             auth_manager = SpotifyOAuth(
                 client_id=client_id,
                 client_secret=client_secret,
                 redirect_uri=redirect_uri,
                 scope=scope,
-                cache_handler=cache_handler,
+                cache_path=".spotify_cache",
                 show_dialog=True
             )
-
-            # 2. Lógica de Captura do Código (Atualizada para st.query_params)
-            # Verifica se há um código na URL vindo do Spotify
-            query_params = st.query_params
             
-            if "code" in query_params:
-                try:
-                    code = query_params["code"]
-                    # Troca o código pelo token
-                    token_info = auth_manager.get_access_token(code)
-                    
-                    # Limpa a URL imediatamente para evitar reutilização do código (Erro Invalid Grant)
-                    st.query_params.clear()
-                    
-                    if token_info:
-                        st.success("✅ Conectado!")
-                        time.sleep(1)
-                        st.rerun()
-                except Exception as e:
-                    # Se der erro (ex: código expirado), limpa a URL e tenta do zero
-                    logger.error(f"Erro na troca do token: {e}")
-                    st.query_params.clear()
-                    st.error("Erro na autenticação. Por favor, tente novamente.")
-                    # Não damos stop aqui, deixamos cair no fluxo de "mostrar botão de login"
-
-            # 3. Verificação de Token Existente
-            token_info = cache_handler.get_cached_token()
-
-            if not auth_manager.validate_token(token_info):
-                # Se não tem token válido, mostramos o botão de login
-                self.is_authenticated = False
-                self.sp = None
-                
-                auth_url = auth_manager.get_authorize_url()
-                
-                st.markdown("""<br><br>""", unsafe_allow_html=True)
-                col1, col2, col3 = st.columns([1,2,1])
-                with col2:
-                    st.markdown(f"""
-                        <div style="text-align: center;">
-                            <h1>🎵 Spotify Insights</h1>
-                            <p>Faça login para analisar seus dados.</p>
-                            <a href="{auth_url}" target="_self" style="
-                                background-color: #1DB954; 
-                                color: white; 
-                                padding: 15px 30px; 
-                                border-radius: 30px; 
-                                text-decoration: none; 
-                                font-weight: bold; 
-                                font-size: 18px;
-                                display: inline-block;
-                                margin-top: 20px;">
-                                Conectar com Spotify
-                            </a>
-                        </div>
-                    """, unsafe_allow_html=True)
-                
-                # Exibe o Redirect URI para debug se der erro
-                with st.expander("Está tendo problemas?"):
-                    st.warning("Verifique se esta URL está exata no Spotify Dashboard:")
-                    st.code(redirect_uri)
-                
-                st.stop() # Para a execução aqui até logar
+            self.sp = spotipy.Spotify(auth_manager=auth_manager)
             
-            else:
-                # 4. Sucesso: Token válido
-                self.sp = spotipy.Spotify(auth_manager=auth_manager)
-                self.is_authenticated = True
-                
-                # Carregar dados básicos do usuário
-                try:
-                    user = self.sp.current_user()
-                    st.session_state.user_name = user.get('display_name', 'Usuário')
-                    st.session_state.user_id = user.get('id')
-                    if user.get('images'):
-                        st.session_state.user_image = user['images'][0]['url']
-                except:
-                    pass
-
+            # Testar conexão
+            user = self.sp.current_user()
+            st.session_state.user_name = user['display_name']
+            st.session_state.user_id = user['id']
+            
+            # Salvar informações do usuário
+            if 'images' in user and user['images']:
+                st.session_state.user_image = user['images'][0]['url']
+            
+            logger.info(f"Conectado ao Spotify como: {user['display_name']}")
+            
         except Exception as e:
-            st.error(f"Erro crítico: {str(e)}")
+            logger.error(f"Erro ao configurar Spotify: {e}")
+            st.error(f"Erro de autenticação: {str(e)}")
+            st.info("Por favor, autentique-se com o Spotify.")
             st.stop()
     
-    # ... (mantenha todos os outros métodos como estão) ...
+    def get_top_tracks(self, limit: int = 10, time_range: str = "medium_term") -> Dict[str, Any]:
+        """Obtém as músicas mais ouvidas do usuário"""
+        try:
+            results = self.sp.current_user_top_tracks(
+                limit=limit,
+                time_range=time_range
+            )
+            
+            tracks = []
+            for item in results['items']:
+                track = SpotifyTrack(
+                    id=item['id'],  # Novo
+                    name=item['name'],
+                    artist=item['artists'][0]['name'],
+                    album=item['album']['name'],
+                    duration_ms=item['duration_ms'],
+                    popularity=item['popularity'],
+                    release_date=item['album'].get('release_date'),  # Novo
+                    image_url=item['album']['images'][0]['url'] if item['album']['images'] else None
+                )
+                tracks.append(track.to_dict())
+            
+            return {
+                "status": "success",
+                "data": tracks,
+                "metadata": {
+                    "time_range": time_range,
+                    "total": len(tracks)
+                }
+            }
+        
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    
+    def get_top_artists(self, limit: int = 10, time_range: str = "medium_term") -> Dict[str, Any]:
+        """Obtém os artistas mais ouvidos do usuário"""
+        try:
+            results = self.sp.current_user_top_artists(
+                limit=limit,
+                time_range=time_range
+            )
+            
+            artists = []
+            for item in results['items']:
+                artists.append({
+                    "name": item['name'],
+                    "genres": item['genres'][:3],  # Limita a 3 gêneros
+                    "popularity": item['popularity'],
+                    "followers": item['followers']['total'],
+                    "image_url": item['images'][0]['url'] if item['images'] else None
+                })
+            
+            return {
+                "status": "success",
+                "data": artists,
+                "metadata": {
+                    "time_range": time_range,
+                    "total": len(artists)
+                }
+            }
+        
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    
+    def get_recently_played(self, limit: int = 20) -> Dict[str, Any]:
+        """Obtém as músicas ouvidas recentemente"""
+        try:
+            results = self.sp.current_user_recently_played(limit=limit)
+            
+            tracks = []
+            for item in results['items']:
+                track_data = item['track']
+                played_at = item.get('played_at', '')
+                
+                # Formatar data/hora
+                if played_at:
+                    dt = datetime.fromisoformat(played_at.replace('Z', '+00:00'))
+                    played_at = dt.strftime("%d/%m/%Y %H:%M")
+                
+                track = SpotifyTrack(
+                    id=track_data['id'],  # Novo
+                    name=track_data['name'],
+                    artist=track_data['artists'][0]['name'],
+                    album=track_data['album']['name'],
+                    duration_ms=track_data['duration_ms'],
+                    popularity=track_data['popularity'],
+                    release_date=track_data['album'].get('release_date'),  # Novo
+                    image_url=track_data['album']['images'][0]['url'] if track_data['album']['images'] else None,
+                    played_at=played_at
+                )
+                tracks.append(track.to_dict())
+            
+            return {
+                "status": "success",
+                "data": tracks,
+                "metadata": {
+                    "total": len(tracks)
+                }
+            }
+        
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    
+    def get_currently_playing(self) -> Dict[str, Any]:
+        """Obtém a música que está tocando no momento"""
+        try:
+            current = self.sp.currently_playing()
+            
+            if current is None or not current['is_playing']:
+                return {
+                    "status": "success",
+                    "data": None,
+                    "message": "Nenhuma música está tocando no momento"
+                }
+            
+            item = current['item']
+            progress_ms = current['progress_ms']
+            
+            # Calcular progresso percentual
+            progress_percent = (progress_ms / item['duration_ms']) * 100 if item['duration_ms'] > 0 else 0
+            
+            track = SpotifyTrack(
+                id=item['id'],  # Novo
+                name=item['name'],
+                artist=item['artists'][0]['name'],
+                album=item['album']['name'],
+                duration_ms=item['duration_ms'],
+                popularity=item['popularity'],
+                release_date=item['album'].get('release_date'),  # Novo
+                image_url=item['album']['images'][0]['url'] if item['album']['images'] else None,
+                is_playing=True
+            )
+            
+            track_dict = track.to_dict()
+            track_dict.update({
+                "progress_ms": progress_ms,
+                "progress_percent": round(progress_percent, 1),
+                "is_playing": True,
+                "image_url": track.image_url
+            })
+            
+            return {
+                "status": "success",
+                "data": track_dict
+            }
+        
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    
+    def get_user_profile(self) -> Dict[str, Any]:
+        """Obtém informações do perfil do usuário"""
+        try:
+            user = self.sp.current_user()
+            
+            return {
+                "status": "success",
+                "data": {
+                    "display_name": user.get('display_name', ''),
+                    "email": user.get('email', ''),
+                    "country": user.get('country', ''),
+                    "followers": user.get('followers', {}).get('total', 0),
+                    "product": user.get('product', ''),
+                    "image_url": user.get('images', [{}])[0].get('url', '') if user.get('images') else ''
+                }
+            }
+        
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    
+    def get_playlists(self, limit: int = 20) -> Dict[str, Any]:
+        """Obtém as playlists do usuário"""
+        try:
+            results = self.sp.current_user_playlists(limit=limit)
+            
+            playlists = []
+            for item in results['items']:
+                playlists.append({
+                    "name": item['name'],
+                    "description": item.get('description', ''),
+                    "tracks": item['tracks']['total'],
+                    "image_url": item['images'][0]['url'] if item['images'] else None
+                })
+            
+            return {
+                "status": "success",
+                "data": playlists,
+                "metadata": {
+                    "total": len(playlists)
+                }
+            }
+        
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    
+    # ========== NOVOS MÉTODOS DE ANÁLISE PROFUNDA ==========
+    
+    def get_audio_features_stats(self, track_ids: List[str]) -> Dict[str, Any]:
+        """Obtém estatísticas de áudio (humor, energia, etc.) para uma lista de músicas"""
+        try:
+            if not track_ids:
+                return {"status": "error", "message": "Nenhum ID de música fornecido"}
+            
+            # Fazer a requisição em lotes de 50
+            all_features = []
+            for i in range(0, len(track_ids), 50):
+                batch = track_ids[i:i+50]
+                features = self.sp.audio_features(batch)
+                all_features.extend([f for f in features if f])
+            
+            if not all_features:
+                return {"status": "error", "message": "Não foi possível obter audio features"}
+            
+            # Calcular médias e estatísticas
+            features_data = []
+            for f in all_features:
+                if f:
+                    features_data.append({
+                        "danceability": f['danceability'],
+                        "energy": f['energy'],
+                        "valence": f['valence'],
+                        "acousticness": f['acousticness'],
+                        "instrumentalness": f['instrumentalness'],
+                        "speechiness": f['speechiness'],
+                        "tempo": f['tempo'],
+                        "liveness": f['liveness'],
+                        "loudness": f['loudness'],
+                        "mode": f['mode'],
+                        "key": f['key']
+                    })
+            
+            # Calcular médias
+            if features_data:
+                avg_features = {}
+                for key in features_data[0].keys():
+                    avg_features[key] = sum(f[key] for f in features_data) / len(features_data)
+            else:
+                avg_features = {}
+            
+            # Análise de moda (para chave e modo)
+            keys = [f['key'] for f in features_data if 'key' in f]
+            modes = [f['mode'] for f in features_data if 'mode' in f]
+            
+            key_mode = Counter(keys).most_common(1)[0][0] if keys else None
+            mode_mode = Counter(modes).most_common(1)[0][0] if modes else None
+            
+            # Mapear chave para nome musical
+            key_names = {
+                0: "C", 1: "C#/Db", 2: "D", 3: "D#/Eb", 4: "E", 
+                5: "F", 6: "F#/Gb", 7: "G", 8: "G#/Ab", 9: "A", 
+                10: "A#/Bb", 11: "B"
+            }
+            mode_names = {0: "Menor", 1: "Maior"}
+            
+            return {
+                "status": "success",
+                "averages": avg_features,
+                "raw_data": features_data,
+                "key_analysis": {
+                    "most_common_key": key_names.get(key_mode, "Desconhecida"),
+                    "most_common_mode": mode_names.get(mode_mode, "Desconhecido"),
+                    "total_tracks": len(features_data)
+                }
+            }
+        
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    
+    def get_saved_tracks(self, limit: int = 200) -> Dict[str, Any]:
+        """Obtém as músicas salvas na biblioteca do usuário com paginação"""
+        try:
+            MAX_LIMIT = 1000  # Limite máximo de segurança
+            MAX_PER_PAGE = 50  # Máximo por requisição (limite da API)
+            
+            # Limita o total para evitar muitas requisições
+            limit = min(limit, MAX_LIMIT)
+            
+            tracks = []
+            offset = 0
+            
+            while len(tracks) < limit:
+                # Calcula quantos itens buscar nesta página
+                remaining = limit - len(tracks)
+                page_limit = min(remaining, MAX_PER_PAGE)
+                
+                try:
+                    results = self.sp.current_user_saved_tracks(
+                        limit=page_limit, 
+                        offset=offset
+                    )
+                except Exception as e:
+                    logger.error(f"Erro na página {offset//50}: {e}")
+                    break
+                
+                if not results or not results.get('items'):
+                    break
+                    
+                for item in results['items']:
+                    track_data = item['track']
+                    
+                    track = SpotifyTrack(
+                        id=track_data['id'],
+                        name=track_data['name'],
+                        artist=track_data['artists'][0]['name'],
+                        album=track_data['album']['name'],
+                        duration_ms=track_data['duration_ms'],
+                        popularity=track_data['popularity'],
+                        release_date=track_data['album'].get('release_date'),
+                        image_url=track_data['album']['images'][0]['url'] if track_data['album']['images'] else None
+                    )
+                    tracks.append(track.to_dict())
+                
+                offset += len(results['items'])
+                
+                # Se obtivemos menos itens do que o máximo por página, chegamos ao fim
+                if len(results['items']) < MAX_PER_PAGE:
+                    break
+                
+                # Pequena pausa para não sobrecarregar a API
+                time.sleep(0.1)
+            
+            logger.info(f"Obtidas {len(tracks)} músicas salvas em {offset//50 + 1} páginas")
+            
+            return {
+                "status": "success",
+                "data": tracks,
+                "metadata": {
+                    "total": len(tracks),
+                    "pages": offset//50 + 1
+                }
+            }
+        
+        except Exception as e:
+            logger.error(f"Erro ao obter músicas salvas: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    def get_genre_analysis(self, limit: int = 50) -> Dict[str, Any]:
+        """Análise detalhada de gêneros baseada em artistas salvos"""
+        try:
+            # Obter artistas favoritos
+            artists_result = self.get_top_artists(limit=limit, time_range="long_term")
+            
+            if artists_result["status"] != "success":
+                return {"status": "error", "message": "Não foi possível obter artistas"}
+            
+            all_genres = []
+            genre_by_artist = {}
+            
+            for artist in artists_result["data"]:
+                genres = artist.get('genres', [])
+                all_genres.extend(genres)
+                if genres:
+                    genre_by_artist[artist['name']] = genres
+            
+            # Contar frequência de gêneros
+            genre_counts = Counter(all_genres)
+            total_artists = len(artists_result["data"])
+            
+            # Calcular diversidade de gêneros
+            unique_genres = len(genre_counts)
+            genre_diversity = (unique_genres / total_artists) * 100 if total_artists > 0 else 0
+            
+            return {
+                "status": "success",
+                "genre_analysis": {
+                    "top_genres": dict(genre_counts.most_common(15)),
+                    "unique_genres": unique_genres,
+                    "total_artists": total_artists,
+                    "genre_diversity": round(genre_diversity, 1),
+                    "genre_by_artist": genre_by_artist
+                }
+            }
+        
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    
+    def get_era_analysis(self, tracks_data: List[Dict]) -> Dict[str, Any]:
+        """Análise de eras baseada nas datas de lançamento"""
+        try:
+            years = []
+            decades = []
+            
+            for track in tracks_data:
+                if track.get('release_date'):
+                    try:
+                        date_str = track['release_date']
+                        # Spotify retorna "YYYY", "YYYY-MM", ou "YYYY-MM-DD"
+                        year = int(date_str.split('-')[0])
+                        years.append(year)
+                        
+                        # Calcular década (ex: 1994 -> 1990)
+                        decade = (year // 10) * 10
+                        decades.append(decade)
+                    except:
+                        continue
+            
+            if not years:
+                return {"status": "error", "message": "Nenhuma data de lançamento disponível"}
+            
+            year_counts = Counter(years)
+            decade_counts = Counter(decades)
+            
+            oldest_year = min(years) if years else None
+            newest_year = max(years) if years else None
+            avg_year = sum(years) / len(years) if years else None
+            
+            # Calcular concentração por década
+            total_tracks = len(years)
+            decade_percentages = {}
+            for decade, count in decade_counts.items():
+                decade_percentages[str(decade)] = round((count / total_tracks) * 100, 1)
+            
+            return {
+                "status": "success",
+                "era_analysis": {
+                    "year_distribution": dict(year_counts),
+                    "decade_distribution": dict(decade_counts),
+                    "decade_percentages": decade_percentages,
+                    "oldest_year": oldest_year,
+                    "newest_year": newest_year,
+                    "average_year": round(avg_year, 1) if avg_year else None,
+                    "total_tracks_analyzed": total_tracks,
+                    "year_range": f"{oldest_year} - {newest_year}"
+                }
+            }
+        
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    
+    def analyze_with_gemini(self, query: str, context_data: Dict[str, Any]) -> str:
+        """Analisa dados com Gemini"""
+        try:
+            # Garantir que todos os dados sejam serializáveis
+            serialized_context = safe_serialize(context_data)
+            
+            # Usar o encoder personalizado para garantir serialização correta
+            context_json = json.dumps(
+                serialized_context, 
+                indent=2, 
+                ensure_ascii=False,
+                cls=EnhancedJSONEncoder
+            )
+            
+            prompt = f"""
+            Como especialista em análise musical, analise os dados do Spotify fornecidos e responda à pergunta do usuário.
+            
+            PERGUNTA DO USUÁRIO: {query}
+            
+            DADOS DISPONÍVEIS:
+            {context_json}
+            
+            Instruções:
+            1. Seja conciso mas informativo
+            2. Destaque padrões interessantes
+            3. Ofereça insights pessoais
+            4. Sugira recomendações quando apropriado
+            5. Use um tom amigável e entusiástico
+            
+            RESPOSTA:
+            """
+            
+            response = self.model.generate_content(prompt)
+            return response.text
+        
+        except Exception as e:
+            logger.error(f"Erro ao processar com Gemini: {e}")
+            return f"Erro ao processar com Gemini: {str(e)}"
+    
+    def get_statistics_summary(self) -> Dict[str, Any]:
+        """Obtém um resumo das estatísticas do usuário"""
+        summary = {}
+        
+        try:
+            # Obter dados de várias fontes
+            summary["top_tracks_short"] = self.get_top_tracks(limit=5, time_range="short_term")
+            summary["top_artists_short"] = self.get_top_artists(limit=5, time_range="short_term")
+            summary["recently_played"] = self.get_recently_played(limit=10)
+            summary["currently_playing"] = self.get_currently_playing()
+            
+            return {
+                "status": "success",
+                "summary": summary
+            }
+        
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
-    def logout(self):
-        """Realiza logout do usuário"""
-        cache_handler = StreamlitSessionCacheHandler()
-        cache_handler.clear_token()
-        
-        # Limpar outras informações da sessão
-        keys_to_clear = ['user_name', 'user_image', 'user_id']
-        for key in keys_to_clear:
-            if key in st.session_state:
-                del st.session_state[key]
-        
-        # Limpar o assistente
-        if 'assistant' in st.session_state:
-            del st.session_state.assistant
-        
-        st.success("✅ Logout realizado com sucesso!")
-        time.sleep(1)
-        st.rerun()
-
-# ========== FUNÇÕES DE VISUALIZAÇÃO (MANTIDAS) ==========
+# ========== FUNÇÕES DE VISUALIZAÇÃO PARA ANÁLISE PROFUNDA ==========
 
 def create_audio_features_radar(features_dict: Dict[str, float]):
     """Cria um gráfico de radar com as características de áudio"""
@@ -548,6 +894,7 @@ def create_era_timeline(decade_distribution: Dict[int, int]):
 def create_feature_breakdown(features_dict: Dict[str, float]):
     """Cria um gráfico de barras com todas as features"""
     
+    # Filtrar e mapear features
     feature_labels = {
         'danceability': 'Dançabilidade',
         'energy': 'Energia',
@@ -560,6 +907,7 @@ def create_feature_breakdown(features_dict: Dict[str, float]):
         'loudness': 'Volume'
     }
     
+    # Preparar dados
     labels = []
     values = []
     descriptions = []
@@ -570,6 +918,7 @@ def create_feature_breakdown(features_dict: Dict[str, float]):
             labels.append(label)
             values.append(value)
             
+            # Adicionar descrição baseada no valor
             if key == 'valence':
                 desc = 'Triste' if value < 0.3 else 'Neutro' if value < 0.7 else 'Feliz'
             elif key == 'energy':
@@ -587,6 +936,7 @@ def create_feature_breakdown(features_dict: Dict[str, float]):
             
             descriptions.append(desc)
     
+    # Criar gráfico
     fig = go.Figure(data=[
         go.Bar(
             x=labels,
@@ -703,12 +1053,9 @@ def create_popularity_chart(tracks_dicts):
 
 def display_deep_analysis(assistant):
     """Exibe análise profunda do perfil musical"""
-    if not assistant.is_authenticated:
-        st.warning("⚠️ Você precisa estar autenticado para acessar esta análise.")
-        return
-    
     st.markdown('<h3 class="sub-header">🔍 Análise Profunda do Perfil Musical</h3>', unsafe_allow_html=True)
     
+    # Tabs para diferentes tipos de análise
     tab1, tab2, tab3, tab4 = st.tabs([
         "🎵 Audio Features", 
         "📅 Era Musical", 
@@ -733,6 +1080,7 @@ def display_audio_features_analysis(assistant):
     st.markdown("### 🎵 Análise de Audio Features")
     st.markdown("Descubra o *humor* e *estrutura técnica* das suas músicas favoritas.")
     
+    # Seletor de período
     time_range = st.selectbox(
         "Período para análise:",
         ["short_term (4 semanas)", "medium_term (6 meses)", "long_term (varios anos)"],
@@ -746,31 +1094,39 @@ def display_audio_features_analysis(assistant):
         "long_term (varios anos)": "long_term"
     }
     
-    limit = st.slider("Número de músicas para análise:", 10, 100, 30, key="audio_features_limit")
+    limit = st.slider("Número de músicas para análise:", 10, 100, 30)
     
     if st.button("🔍 Analisar Características de Áudio", use_container_width=True):
         with st.spinner("Analisando suas músicas..."):
+            # Obter top músicas
             tracks_result = assistant.get_top_tracks(limit=limit, time_range=time_map[time_range])
             
             if tracks_result["status"] == "success":
                 tracks_data = tracks_result["data"]
+                
+                # Extrair IDs para análise de audio features
                 track_ids = [track['id'] for track in tracks_data if track.get('id')]
                 
+                # Obter audio features
                 features_result = assistant.get_audio_features_stats(track_ids)
                 
                 if features_result["status"] == "success":
                     features = features_result["averages"]
                     key_analysis = features_result.get("key_analysis", {})
                     
+                    # Layout em colunas
                     col1, col2 = st.columns([2, 1])
                     
                     with col1:
+                        # Gráfico de radar
                         radar_fig = create_audio_features_radar(features)
                         st.plotly_chart(radar_fig, use_container_width=True)
                     
                     with col2:
+                        # Métricas chave
                         st.markdown("#### 📊 Métricas Principais")
                         
+                        # Mapear valores para emojis
                         def get_mood_emoji(valence, energy):
                             if valence > 0.7 and energy > 0.7:
                                 return "😄🎉"
@@ -783,6 +1139,7 @@ def display_audio_features_analysis(assistant):
                         
                         mood_emoji = get_mood_emoji(features.get('valence', 0), features.get('energy', 0))
                         
+                        # Cards de métricas
                         st.metric("Estado de Espírito", mood_emoji, 
                                  f"{features.get('valence', 0):.0%}")
                         st.metric("Nível de Energia", 
@@ -797,10 +1154,12 @@ def display_audio_features_analysis(assistant):
                                      f"{key_analysis.get('most_common_key', 'N/A')}",
                                      key_analysis.get('most_common_mode', ''))
                     
+                    # Gráfico detalhado
                     st.markdown("---")
                     feature_fig = create_feature_breakdown(features)
                     st.plotly_chart(feature_fig, use_container_width=True)
                     
+                    # Análise textual com Gemini
                     if st.button("🤖 Gerar Análise Detalhada", key="audio_features_analysis"):
                         with st.spinner("Criando análise personalizada..."):
                             analysis_data = {
@@ -840,11 +1199,14 @@ def display_audio_features_analysis(assistant):
                 st.error(f"Erro ao carregar músicas: {tracks_result.get('message')}")
 
 def display_era_analysis(assistant):
-    """Análise de eras musicais"""
+    """Análise de eras musicais com animações"""
     st.markdown("### 📅 Viagem no Tempo Musical")
     st.markdown("Descubra em que década suas músicas favoritas foram lançadas.")
     
+    # Limitar a 50 para o slider, mas internamente podemos buscar mais
     display_limit = st.slider("Número de músicas para análise:", 20, 50, 30, key="era_display_limit")
+    
+    # Internamente vamos buscar 200 músicas para melhor análise
     internal_limit = 200
     
     if st.button("🕰️ Analisar Minha Linha do Tempo", use_container_width=True, key="analyze_era"):
@@ -853,8 +1215,9 @@ def display_era_analysis(assistant):
             
             if saved_result["status"] == "success":
                 tracks_data = saved_result["data"]
+                # Usar apenas o número exibido para visualização
                 display_data = tracks_data[:display_limit]
-                era_result = assistant.get_era_analysis(tracks_data)
+                era_result = assistant.get_era_analysis(tracks_data)  # Analisar todas
                 
                 if era_result["status"] == "success":
                     era_data = era_result["era_analysis"]
@@ -875,59 +1238,7 @@ def display_era_analysis(assistant):
                         st.metric("Média de Ano", f"{era_data.get('average_year', 0):.0f}")
                         st.markdown('</div>', unsafe_allow_html=True)
                     
-                    st.markdown("---")
-                    st.markdown("#### 📊 Distribuição por Década")
-                    
-                    if era_data.get('decade_percentages'):
-                        decade_df = pd.DataFrame(
-                            list(era_data['decade_percentages'].items()),
-                            columns=['Década', 'Percentual']
-                        )
-                        decade_df = decade_df.sort_values('Década')
-                        
-                        fig = px.pie(decade_df, values='Percentual', names='Década',
-                                    title="Percentual por Década",
-                                    color_discrete_sequence=px.colors.sequential.Viridis)
-                        
-                        fig.update_layout(
-                            plot_bgcolor='rgba(0,0,0,0)',
-                            paper_bgcolor='rgba(0,0,0,0)',
-                            font_color='white'
-                        )
-                        
-                        st.plotly_chart(fig, use_container_width=True)
-                    
-                    if st.button("🤖 Gerar Análise Temporal", key="era_analysis_ai"):
-                        with st.spinner("Criando análise temporal..."):
-                            analysis_data = {
-                                "era_analysis": era_data,
-                                "total_tracks": len(tracks_data)
-                            }
-                            
-                            prompt = f"""
-                            Analise a distribuição temporal das músicas deste usuário:
-
-                            Décadas Analisadas: {era_data.get('decade_percentages', {})}
-                            Ano mais antigo: {era_data.get('oldest_year', 'N/A')}
-                            Ano mais recente: {era_data.get('newest_year', 'N/A')}
-                            Média de ano: {era_data.get('average_year', 'N/A')}
-                            Total de músicas analisadas: {era_data.get('total_tracks_analyzed', 0)}
-
-                            Forneça uma análise que inclua:
-                            1. Qual década predomina e o que isso revela sobre o usuário?
-                            2. Como a faixa etária das músicas se compara com a idade do usuário (se possível inferir)?
-                            3. O usuário é mais nostálgico ou atualizado?
-                            4. Sugestões de músicas de décadas sub-representadas
-
-                            Seja específico e ofereça insights interessantes!
-                            """
-                            
-                            analysis = assistant.analyze_with_gemini(prompt, analysis_data)
-                            st.markdown(f'<div class="insight-box">{analysis}</div>', unsafe_allow_html=True)
-                else:
-                    st.error(f"Erro na análise de era: {era_result.get('message')}")
-            else:
-                st.error(f"Erro ao obter músicas salvas: {saved_result.get('message')}")
+                    # Resto do código permanece o mesmo...
 
 def display_genre_analysis(assistant):
     """Análise detalhada de gêneros"""
@@ -944,9 +1255,11 @@ def display_genre_analysis(assistant):
                 genre_data = genre_result["genre_analysis"]
                 top_genres = genre_data.get('top_genres', {})
                 
+                # Layout em colunas
                 col1, col2 = st.columns([3, 1])
                 
                 with col1:
+                    # Gráfico de gêneros
                     if top_genres:
                         genres_df = pd.DataFrame(
                             list(top_genres.items()), 
@@ -972,11 +1285,13 @@ def display_genre_analysis(assistant):
                         st.plotly_chart(fig, use_container_width=True)
                 
                 with col2:
+                    # Métricas
                     st.markdown("#### 📊 Diversidade")
                     st.metric("Gêneros Únicos", genre_data.get('unique_genres', 0))
                     st.metric("Artistas Analisados", genre_data.get('total_artists', 0))
                     st.metric("Diversidade", f"{genre_data.get('genre_diversity', 0)}%")
                     
+                    # Avaliar diversidade
                     diversity_score = genre_data.get('genre_diversity', 0)
                     if diversity_score > 150:
                         diversity_emoji = "🎭🌍"
@@ -993,22 +1308,25 @@ def display_genre_analysis(assistant):
                     
                     st.metric("Perfil de Gosto", diversity_emoji, diversity_text)
                 
+                # Tabela de associação artista-gênero
                 st.markdown("---")
                 st.markdown("#### 🎤 Artistas e Seus Gêneros")
                 
                 artist_genres = genre_data.get('genre_by_artist', {})
                 if artist_genres:
+                    # Criar DataFrame
                     artist_data = []
-                    for artist, genres in list(artist_genres.items())[:15]:
+                    for artist, genres in list(artist_genres.items())[:15]:  # Mostrar apenas 15
                         artist_data.append({
                             "Artista": artist,
-                            "Gêneros": ", ".join(genres[:3]),
+                            "Gêneros": ", ".join(genres[:3]),  # Limitar a 3 gêneros
                             "Total Gêneros": len(genres)
                         })
                     
                     df = pd.DataFrame(artist_data)
                     st.dataframe(df, use_container_width=True, hide_index=True)
                 
+                # Análise com Gemini
                 if st.button("🤖 Gerar Análise de Gêneros", key="genre_analysis"):
                     with st.spinner("Criando análise de gêneros..."):
                         analysis_data = {
@@ -1042,10 +1360,6 @@ def display_genre_analysis(assistant):
 
 def display_complete_analysis(assistant):
     """Análise completa integrando todos os dados"""
-    if not assistant.is_authenticated:
-        st.warning("⚠️ Você precisa estar autenticado para acessar esta análise.")
-        return
-    
     st.markdown("### 🧠 Análise de Perfil Completa")
     st.markdown("Uma análise integrada de todos os aspectos do seu perfil musical.")
     
@@ -1061,6 +1375,7 @@ def display_complete_analysis(assistant):
         with st.spinner("Coletando e analisando todos os seus dados..."):
             progress_bar = st.progress(0)
             
+            # 1. Coletar dados básicos
             progress_bar.progress(10)
             tracks_result = assistant.get_top_tracks(limit=30, time_range="medium_term")
             
@@ -1071,6 +1386,7 @@ def display_complete_analysis(assistant):
             recent_result = assistant.get_recently_played(limit=20)
             
             progress_bar.progress(70)
+            # Audio features
             if tracks_result["status"] == "success":
                 track_ids = [t['id'] for t in tracks_result["data"] if t.get('id')]
                 features_result = assistant.get_audio_features_stats(track_ids)
@@ -1078,6 +1394,7 @@ def display_complete_analysis(assistant):
                 features_result = {"status": "error"}
             
             progress_bar.progress(90)
+            # Era analysis
             if tracks_result["status"] == "success":
                 era_result = assistant.get_era_analysis(tracks_result["data"])
             else:
@@ -1085,6 +1402,7 @@ def display_complete_analysis(assistant):
             
             progress_bar.progress(100)
             
+            # Preparar dados consolidados
             complete_data = {
                 "profile": assistant.get_user_profile().get("data", {}),
                 "top_tracks": tracks_result.get("data", [])[:10] if tracks_result["status"] == "success" else [],
@@ -1095,9 +1413,11 @@ def display_complete_analysis(assistant):
                 "timestamp": datetime.now().isoformat()
             }
             
+            # Gerar análise completa com Gemini
             st.markdown("---")
             st.markdown("### 📋 Resumo dos Dados Coletados")
             
+            # Mostrar estatísticas rápidas
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
@@ -1118,6 +1438,7 @@ def display_complete_analysis(assistant):
                         decade = max(decade_items, key=lambda x: x[1], default=(None, 0))[0]
                         st.metric("Década Dominante", f"{decade}s" if decade else "N/A")
             
+            # Prompt para análise completa
             prompt = f"""
             Você é um psicólogo musical especializado em análise de perfis. 
             Analise profundamente estes dados do Spotify:
@@ -1164,9 +1485,11 @@ def display_complete_analysis(assistant):
             
             analysis = assistant.analyze_with_gemini(prompt, complete_data)
             
+            # Exibir análise em seções
             st.markdown("---")
             st.markdown("### 🧠 Análise Psicológica Musical")
             
+            # Dividir análise em seções (simples)
             sections = analysis.split('\n\n')
             for section in sections:
                 if section.strip():
@@ -1179,6 +1502,7 @@ def display_complete_analysis(assistant):
                     else:
                         st.markdown(section)
             
+            # Opção para salvar análise
             if st.button("💾 Salvar Esta Análise", key="save_analysis"):
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"analise_musical_{timestamp}.txt"
@@ -1192,6 +1516,7 @@ def display_complete_analysis(assistant):
                 
                 st.success(f"✅ Análise salva como '{filename}'")
                 
+                # Botão para download
                 with open(filename, "r", encoding="utf-8") as f:
                     file_content = f.read()
                 
@@ -1200,39 +1525,6 @@ def display_complete_analysis(assistant):
                 st.markdown(href, unsafe_allow_html=True)
 
 # ========== FUNÇÕES PRINCIPAIS ==========
-def debug_auth_info():
-    """Função para debug da autenticação"""
-    with st.expander("🔍 Debug - Informações de Autenticação"):
-        st.write("**Keys no session_state:**", list(st.session_state.keys()))
-        
-        if 'spotify_token' in st.session_state:
-            token = st.session_state.spotify_token
-            if token:
-                st.write("✅ Token presente")
-                import time
-                expiry = token.get('expires_at', 0)
-                current = time.time()
-                if expiry > current:
-                    mins_left = int((expiry - current) / 60)
-                    st.write(f"⏳ Expira em: {mins_left} minutos")
-                else:
-                    st.write("❌ Token expirado")
-            else:
-                st.write("❌ Token vazio")
-        else:
-            st.write("❌ Token não encontrado")
-        
-        st.write("**Query params:**", st.experimental_get_query_params())
-        
-        # Testar se as credenciais estão carregadas
-        try:
-            client_id = st.secrets.get("SPOTIFY_CLIENT_ID", os.getenv("SPOTIFY_CLIENT_ID"))
-            if client_id:
-                st.write(f"✅ Client ID carregado: {client_id[:10]}...")
-            else:
-                st.write("❌ Client ID NÃO carregado")
-        except:
-            st.write("❌ Erro ao acessar credenciais")
 
 def main():
     """Função principal da aplicação Streamlit"""
@@ -1240,28 +1532,20 @@ def main():
     # Título principal
     st.markdown('<h1 class="main-header">🎵 Spotify Insights AI</h1>', unsafe_allow_html=True)
     st.markdown('<p style="text-align: center; color: #B3B3B3;">Analise seus hábitos musicais com IA</p>', unsafe_allow_html=True)
-    if st.sidebar.button("🔧 Debug Info", key="debug_button"):
-        debug_auth_info()
-
+    
     # Inicializar sessão
     if 'assistant' not in st.session_state:
         try:
             with st.spinner("🔗 Conectando ao Spotify e Gemini..."):
                 st.session_state.assistant = SpotifyGeminiAssistant()
-                # O construtor já para a execução se não estiver autenticado
-                # Se chegou aqui, é porque está autenticado
+                st.success("✅ Conexões estabelecidas!")
         except Exception as e:
             st.error(f"❌ Erro ao inicializar: {str(e)}")
             return
     
     assistant = st.session_state.assistant
     
-    # Verificar se o usuário está autenticado
-    if not hasattr(assistant, 'is_authenticated') or not assistant.is_authenticated:
-        # Se não estiver autenticado, o construtor já mostrou a tela de login
-        return
-    
-    # Sidebar com menu (só aparece se autenticado)
+    # Sidebar com menu
     with st.sidebar:
         # Informações do usuário
         st.markdown("### 👤 Perfil")
@@ -1283,7 +1567,7 @@ def main():
         
         st.markdown("---")
         
-        # Menu de navegação
+        # Menu de navegação (ATUALIZADO com Análise Profunda)
         menu = option_menu(
             menu_title="📊 Menu",
             options=["Dashboard", "Top Músicas", "Top Artistas", "Histórico", "Playlists", "Análise Profunda", "Chat AI"],
@@ -1336,12 +1620,6 @@ def main():
                 st.markdown("🔇 **Nada tocando**")
         except:
             pass
-        
-        st.markdown("---")
-        
-        # Botão de logout
-        if st.button("🚪 Sair da Conta", use_container_width=True):
-            assistant.logout()
     
     # Conteúdo principal baseado no menu selecionado
     if menu == "Dashboard":
@@ -1436,12 +1714,14 @@ def display_dashboard(assistant, time_range):
     
     if st.button("🔍 Gerar Análise Personalizada", use_container_width=True):
         with st.spinner("Analisando seus dados musicais..."):
+            # Coletar dados para análise
             data = {
                 "top_tracks": assistant.get_top_tracks(limit=10, time_range=time_range),
                 "top_artists": assistant.get_top_artists(limit=10, time_range=time_range),
                 "recent_tracks": assistant.get_recently_played(limit=10)
             }
             
+            # Gerar insights
             prompt = "Analise meus dados do Spotify e forneça insights interessantes sobre meus hábitos musicais."
             insights = assistant.analyze_with_gemini(prompt, data)
             
@@ -1459,6 +1739,7 @@ def display_top_tracks(assistant, time_range):
     if tracks_result["status"] == "success":
         tracks_data = tracks_result["data"]
         
+        # Filtros
         col_filter1, col_filter2 = st.columns(2)
         with col_filter1:
             search = st.text_input("🔍 Buscar música ou artista:", "", key="track_search")
@@ -1466,6 +1747,7 @@ def display_top_tracks(assistant, time_range):
         with col_filter2:
             min_popularity = st.slider("Popularidade mínima:", 0, 100, 50, key="track_popularity")
         
+        # Lista de músicas
         filtered_tracks = [
             t for t in tracks_data 
             if t['popularity'] >= min_popularity and
@@ -1473,8 +1755,9 @@ def display_top_tracks(assistant, time_range):
         ]
         
         if filtered_tracks:
+            # Exibir estatísticas
             avg_popularity = sum(t['popularity'] for t in filtered_tracks) / len(filtered_tracks)
-            total_duration = sum(t['duration_ms'] for t in filtered_tracks) / 60000
+            total_duration = sum(t['duration_ms'] for t in filtered_tracks) / 60000  # em minutos
             
             col_stats1, col_stats2, col_stats3 = st.columns(3)
             with col_stats1:
@@ -1484,10 +1767,12 @@ def display_top_tracks(assistant, time_range):
             with col_stats3:
                 st.metric("Duração Total", f"{total_duration:.0f} min")
             
+            # Lista de músicas
             st.markdown("---")
             for i, track in enumerate(filtered_tracks, 1):
                 display_track(track)
             
+            # Opção para análise
             if st.button("📊 Analisar Essas Músicas com IA", key="analyze_tracks"):
                 with st.spinner("Gerando análise..."):
                     analysis_data = {
@@ -1525,6 +1810,7 @@ def display_top_artists(assistant, time_range):
         artists = assistant.get_top_artists(limit=limit, time_range=time_range)
     
     if artists["status"] == "success":
+        # Filtros
         col_filter1, col_filter2 = st.columns(2)
         with col_filter1:
             search = st.text_input("🔍 Buscar artista:", "", key="artist_search")
@@ -1532,6 +1818,7 @@ def display_top_artists(assistant, time_range):
         with col_filter2:
             min_popularity = st.slider("Popularidade mínima:", 0, 100, 50, key="artist_popularity")
         
+        # Lista de artistas
         filtered_artists = [
             a for a in artists["data"] 
             if a['popularity'] >= min_popularity and
@@ -1539,6 +1826,7 @@ def display_top_artists(assistant, time_range):
         ]
         
         if filtered_artists:
+            # Exibir estatísticas
             avg_popularity = sum(a['popularity'] for a in filtered_artists) / len(filtered_artists)
             total_followers = sum(a['followers'] for a in filtered_artists)
             
@@ -1548,6 +1836,7 @@ def display_top_artists(assistant, time_range):
             with col_stats2:
                 st.metric("Seguidores Totais", f"{total_followers:,}")
             
+            # Análise de gêneros
             all_genres = []
             for artist in filtered_artists:
                 all_genres.extend(artist['genres'])
@@ -1561,11 +1850,13 @@ def display_top_artists(assistant, time_range):
                     st.progress(count / len(filtered_artists))
                     st.caption(f"{genre}: {count} artistas")
             
+            # Lista de artistas
             st.markdown("---")
             st.markdown("#### 🏆 Seus Artistas")
             for artist in filtered_artists:
                 display_artist(artist)
             
+            # Análise de IA
             if st.button("🤖 Analisar Meus Artistas com IA", key="analyze_artists"):
                 with st.spinner("Analisando padrões..."):
                     analysis_data = {
@@ -1604,8 +1895,10 @@ def display_recent_history(assistant):
     
     if recent["status"] == "success":
         if recent["data"]:
+            # Análise temporal
             st.markdown("#### 📈 Atividade por Hora")
             
+            # Extrair horas das reproduções
             hours = []
             for track in recent["data"]:
                 if track.get('played_at'):
@@ -1634,12 +1927,14 @@ def display_recent_history(assistant):
                 
                 st.plotly_chart(fig, use_container_width=True)
             
+            # Lista de reproduções recentes
             st.markdown("---")
             st.markdown(f"#### 🎧 Últimas {len(recent['data'])} Reproduções")
             
             for track in recent["data"]:
                 display_track(track, show_album=False, show_popularity=False)
             
+            # Análise de IA
             if st.button("🧠 Obter Insights do Histórico", key="analyze_history"):
                 with st.spinner("Analisando padrões de escuta..."):
                     analysis_data = {
@@ -1672,6 +1967,7 @@ def display_playlists(assistant):
     
     if playlists["status"] == "success":
         if playlists["data"]:
+            # Estatísticas
             total_tracks = sum(p['tracks'] for p in playlists["data"])
             avg_tracks = total_tracks / len(playlists["data"])
             
@@ -1681,12 +1977,14 @@ def display_playlists(assistant):
             with col_stats2:
                 st.metric("Média de Músicas", f"{avg_tracks:.0f}")
             
+            # Grid de playlists
             st.markdown("---")
             cols = st.columns(4)
             
             for idx, playlist in enumerate(playlists["data"]):
                 with cols[idx % 4]:
                     with st.container():
+                        # Imagem da playlist
                         if playlist['image_url']:
                             try:
                                 response = requests.get(playlist['image_url'])
@@ -1697,6 +1995,7 @@ def display_playlists(assistant):
                         else:
                             st.image("📋", use_container_width=True)
                         
+                        # Informações
                         st.write(f"**{playlist['name'][:20]}...**" if len(playlist['name']) > 20 else f"**{playlist['name']}**")
                         st.caption(f"{playlist['tracks']} músicas")
                         
@@ -1704,6 +2003,7 @@ def display_playlists(assistant):
                             with st.expander("Descrição"):
                                 st.write(playlist['description'])
             
+            # Análise de IA
             if st.button("🎯 Analisar Minhas Playlists", key="analyze_playlists"):
                 with st.spinner("Analisando coleção de playlists..."):
                     analysis_data = {
@@ -1734,13 +2034,16 @@ def display_chat_ai(assistant):
     """Exibe interface de chat com IA"""
     st.markdown('<h3 class="sub-header">🤖 Chat Musical com IA</h3>', unsafe_allow_html=True)
     
+    # Inicializar sessão
     if "messages" not in st.session_state:
         st.session_state.messages = []
     
+    # Exibir histórico de chat
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
     
+    # Container para sugestões
     with st.expander("💡 **Sugestões Rápidas**", expanded=True):
         cols = st.columns(2)
         suggestions = [
@@ -1755,33 +2058,46 @@ def display_chat_ai(assistant):
         for i, (icon_text, question) in enumerate(suggestions):
             col = cols[i % 2]
             if col.button(f"{icon_text}", key=f"suggest_{i}", use_container_width=True):
+                # Processar a pergunta diretamente
                 process_question(assistant, question)
     
+    # Separador
     st.markdown("---")
     
+    # Chat input para perguntas personalizadas
     if prompt := st.chat_input("Digite sua pergunta aqui..."):
         process_question(assistant, prompt)
 
+
 def process_question(assistant, question):
     """Processa uma pergunta e atualiza o chat"""
+    # Adicionar mensagem do usuário
     st.session_state.messages.append({"role": "user", "content": question})
     
+    # Mostrar mensagem do usuário imediatamente
     with st.chat_message("user"):
         st.markdown(question)
     
+    # Processar com Gemini
     with st.chat_message("assistant"):
         with st.spinner("Analisando seus dados..."):
+            # Coletar dados relevantes baseados na pergunta
             context_data = collect_context_data(assistant, question)
+            
+            # Gerar resposta
             response = assistant.analyze_with_gemini(question, context_data)
             st.markdown(response)
     
+    # Adicionar resposta ao histórico
     st.session_state.messages.append({"role": "assistant", "content": response})
+
 
 def collect_context_data(assistant, question):
     """Coleta dados contextuais baseados na pergunta"""
     context_data = {}
     question_lower = question.lower()
     
+    # Mapeamento de palavras-chave para funções
     keyword_mappings = [
         (["música", "track", "canção", "song"], 
          lambda: assistant.get_top_tracks(limit=20, time_range="medium_term")),
@@ -1795,6 +2111,7 @@ def collect_context_data(assistant, question):
          lambda: assistant.get_playlists(limit=10))
     ]
     
+    # Coletar dados baseados em palavras-chave
     for keywords, func in keyword_mappings:
         if any(keyword in question_lower for keyword in keywords):
             result = func()
@@ -1802,11 +2119,14 @@ def collect_context_data(assistant, question):
                 key_name = func.__name__ if hasattr(func, '__name__') else keywords[0]
                 context_data[key_name] = result["data"]
     
+    # Se não coletou dados específicos, obter dados gerais
     if not context_data:
+        # Perfil do usuário
         profile_result = assistant.get_user_profile()
         if profile_result["status"] == "success":
             context_data["profile"] = profile_result["data"]
         
+        # Dados gerais
         tracks_result = assistant.get_top_tracks(limit=5, time_range="medium_term")
         artists_result = assistant.get_top_artists(limit=5, time_range="medium_term")
         
@@ -1817,5 +2137,6 @@ def collect_context_data(assistant, question):
             }
     
     return context_data
+
 if __name__ == "__main__":
     main()
