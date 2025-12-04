@@ -1882,6 +1882,39 @@ def collect_context_data(assistant, question):
             }
     
     return context_data
+def debug_auth_info():
+    """Função para debug da autenticação"""
+    with st.expander("🔍 Debug - Informações de Autenticação"):
+        st.write("**Keys no session_state:**", list(st.session_state.keys()))
+        
+        if 'spotify_token' in st.session_state:
+            token = st.session_state.spotify_token
+            if token:
+                st.write("✅ Token presente")
+                import time
+                expiry = token.get('expires_at', 0)
+                current = time.time()
+                if expiry > current:
+                    mins_left = int((expiry - current) / 60)
+                    st.write(f"⏳ Expira em: {mins_left} minutos")
+                else:
+                    st.write("❌ Token expirado")
+            else:
+                st.write("❌ Token vazio")
+        else:
+            st.write("❌ Token não encontrado")
+        
+        st.write("**Query params:**", st.experimental_get_query_params())
+        
+        # Testar se as credenciais estão carregadas
+        try:
+            client_id = st.secrets.get("SPOTIFY_CLIENT_ID", os.getenv("SPOTIFY_CLIENT_ID"))
+            if client_id:
+                st.write(f"✅ Client ID carregado: {client_id[:10]}...")
+            else:
+                st.write("❌ Client ID NÃO carregado")
+        except:
+            st.write("❌ Erro ao acessar credenciais")
 
 if __name__ == "__main__":
     main()
